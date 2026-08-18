@@ -1,0 +1,225 @@
+// Routewise operational data model.
+// One Order is one delivery job from booking to signed proof of delivery to invoice.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  DRAFT
+  UNASSIGNED
+  ASSIGNED
+  IN_TRANSIT
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum Priority {
+  STANDARD
+  RUSH
+  STAT
+}
+
+enum StopType {
+  PICKUP
+  DROPOFF
+  DEPOT
+}
+
+enum StopStatus {
+  PENDING
+  EN_ROUTE
+  ARRIVED
+  COMPLETED
+  SKIPPED
+}
+
+enum RouteStatus {
+  PLANNED
+  DISPATCHED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum DriverStatus {
+  AVAILABLE
+  ON_ROUTE
+  ON_BREAK
+  OFF_DUTY
+}
+
+enum EmploymentType {
+  EMPLOYEE
+  CONTRACTOR
+}
+
+enum VehicleType {
+  CARGO_VAN
+  BOX_TRUCK
+  REEFER
+  FLATBED
+  LIFTGATE_TRUCK
+}
+
+enum ProofKind {
+  PHOTO
+  SIGNATURE
+  ID_CHECK
+  BARCODE
+}
+
+model Depot {
+  id           String    @id @default(cuid())
+  name         String
+  address      String
+  lat          Float
+  lng          Float
+  timezone     String    @default("America/Los_Angeles")
+  /// Minutes after midnight; orders booked later roll to the next day.
+  cutoffMinute Int       @default(960)
+  vehicles     Vehicle[]
+  routes       Route[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Customer {
+  id           String   @id @default(cuid())
+  name         String
+  email        String?
+  phone        String?
+  /// Rate card key used to price completed stops.
+  rateCard     String   @default("standard")
+  portalDomain String?  @unique
+  orders       Order[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Order {
+  id           String       @id @default(cuid())
+  reference    String
+  status       OrderStatus  @default(UNASSIGNED)
+  priority     Priority     @default(STANDARD)
+  serviceLevel String       @default("standard")
+  jobType      String       @default("delivery")
+  /// Proof required before the drop-off stop can be completed.
+  proof        ProofKind[]
+  weightLbs    Int          @default(0)
+  pallets      Int          @default(0)
+  notes        String?
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  customerId   String
+  stops        Stop[]
+  totalCents   Int?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([customerId, reference])
+  @@index([status, priority])
+}
+
+model Stop {
+  id           String            @id @default(cuid())
+  type         StopType
+  status       StopStatus        @default(PENDING)
+  address      String
+  lat          Float
+  lng          Float
+  /// Delivery window in minutes after midnight, local depot time.
+  windowStart  Int?
+  windowEnd    Int?
+  serviceMins  Int               @default(10)
+  sequence     Int?
+  etaAt        DateTime?
+  arrivedAt    DateTime?
+  completedAt  DateTime?
+  order        Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId      String
+  route        Route?            @relation(fields: [routeId], references: [id])
+  routeId      String?
+  proofs       ProofOfDelivery[]
+
+  @@index([routeId, sequence])
+  @@index([orderId])
+}
+
+model Route {
+  id          String      @id @default(cuid())
+  name        String
+  serviceDate DateTime    @db.Date
+  status      RouteStatus @default(PLANNED)
+  startMinute Int         @default(420)
+  distanceMi  Float       @default(0)
+  durationMin Int         @default(0)
+  depot       Depot       @relation(fields: [depotId], references: [id])
+  depotId     String
+  driver      Driver?     @relation(fields: [driverId], references: [id])
+  driverId    String?
+  vehicle     Vehicle?    @relation(fields: [vehicleId], references: [id])
+  vehicleId   String?
+  stops       Stop[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([serviceDate, depotId])
+}
+
+model Driver {
+  id           String            @id @default(cuid())
+  name         String
+  phone        String
+  status       DriverStatus      @default(OFF_DUTY)
+  employment   EmploymentType    @default(EMPLOYEE)
+  skills       String[]
+  lastLat      Float?
+  lastLng      Float?
+  lastPingAt   DateTime?
+  routes       Route[]
+  proofs       ProofOfDelivery[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([status])
+}
+
+model Vehicle {
+  id           String      @id @default(cuid())
+  label        String
+  plate        String      @unique
+  type         VehicleType
+  capacityLbs  Int
+  capacityPallets Int      @default(0)
+  hasLiftgate  Boolean     @default(false)
+  /// Parked vehicles are kept on file but are not billed as active.
+  parked       Boolean     @default(false)
+  depot        Depot       @relation(fields: [depotId], references: [id])
+  depotId      String
+  routes       Route[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+model ProofOfDelivery {
+  id          String    @id @default(cuid())
+  kind        ProofKind
+  /// Object-storage key for photos and signature images.
+  assetKey    String?
+  signedBy    String?
+  barcode     String?
+  lat         Float
+  lng         Float
+  capturedAt  DateTime  @default(now())
+  stop        Stop      @relation(fields: [stopId], references: [id], onDelete: Cascade)
+  stopId      String
+  driver      Driver    @relation(fields: [driverId], references: [id])
+  driverId    String
+
+  @@index([stopId])
+}
